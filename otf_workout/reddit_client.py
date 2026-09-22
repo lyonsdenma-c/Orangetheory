@@ -1,13 +1,20 @@
-"""Read-only client for pulling posts from a subreddit's public JSON API.
+"""Client for pulling posts from a subreddit via Reddit's API.
 
-No Reddit API credentials are required: this uses the public
-``https://www.reddit.com/r/<sub>/<sort>.json`` endpoints that back the
-website itself. Reddit rate-limits requests without a descriptive
-User-Agent, so one is always sent.
+Reddit's old unauthenticated ``https://www.reddit.com/r/<sub>/<sort>.json``
+endpoints now return ``403 Blocked`` for most automated/cloud traffic
+(confirmed from a GitHub Actions runner). The supported path is OAuth
+"application only" auth, which needs a free script-type app registered at
+https://www.reddit.com/prefs/apps (no Reddit login/password required to use
+it, just the app's client id/secret).
+
+Set ``REDDIT_CLIENT_ID`` and ``REDDIT_CLIENT_SECRET`` env vars to use OAuth.
+If they're unset, this falls back to the public ``.json`` endpoints, which
+may still work from some networks but are not reliable.
 """
 from __future__ import annotations
 
 import datetime as dt
+import os
 from typing import Any, Iterable, Optional, Sequence
 
 import requests
@@ -15,6 +22,31 @@ import requests
 DEFAULT_USER_AGENT = "python:otf-workout-table:1.0 (by /u/otf-workout-bot)"
 DEFAULT_TITLE_KEYWORDS = ("workout",)
 DEFAULT_FLAIR_KEYWORDS = ("workout",)
+
+TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
+OAUTH_BASE_URL = "https://oauth.reddit.com"
+PUBLIC_BASE_URL = "https://www.reddit.com"
+
+
+def get_access_token(
+    client_id: str,
+    client_secret: str,
+    *,
+    session: Optional[requests.Session] = None,
+    user_agent: str = DEFAULT_USER_AGENT,
+    timeout: float = 15.0,
+) -> str:
+    """Exchange script-app credentials for an app-only OAuth access token."""
+    session = session or requests.Session()
+    resp = session.post(
+        TOKEN_URL,
+        auth=(client_id, client_secret),
+        data={"grant_type": "client_credentials"},
+        headers={"User-Agent": user_agent},
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
 
 
 def fetch_posts(
@@ -25,19 +57,30 @@ def fetch_posts(
     query: Optional[str] = None,
     session: Optional[requests.Session] = None,
     user_agent: str = DEFAULT_USER_AGENT,
+    access_token: Optional[str] = None,
     timeout: float = 15.0,
 ) -> list[dict[str, Any]]:
-    """Return raw post data dicts from a subreddit listing or search."""
+    """Return raw post data dicts from a subreddit listing or search.
+
+    Uses the authenticated ``oauth.reddit.com`` API when ``access_token`` is
+    given, otherwise falls back to the public ``www.reddit.com`` endpoints.
+    """
     session = session or requests.Session()
-    base = f"https://www.reddit.com/r/{subreddit}"
+    base = f"{OAUTH_BASE_URL}/r/{subreddit}" if access_token else f"{PUBLIC_BASE_URL}/r/{subreddit}"
+    suffix = "" if access_token else ".json"
+
     if query:
-        url = f"{base}/search.json"
-        params = {"q": query, "restrict_sr": "on", "sort": sort, "limit": limit}
+        url = f"{base}/search{suffix}"
+        params: dict[str, Any] = {"q": query, "restrict_sr": "on", "sort": sort, "limit": limit}
     else:
-        url = f"{base}/{sort}.json"
+        url = f"{base}/{sort}{suffix}"
         params = {"limit": limit}
 
-    resp = session.get(url, params=params, headers={"User-Agent": user_agent}, timeout=timeout)
+    headers = {"User-Agent": user_agent}
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+
+    resp = session.get(url, params=params, headers=headers, timeout=timeout)
     resp.raise_for_status()
     data = resp.json()
     return [child["data"] for child in data["data"]["children"]]
@@ -88,14 +131,27 @@ def get_daily_workout_post(
     target_date: Optional[dt.date] = None,
     session: Optional[requests.Session] = None,
 ) -> Optional[dict[str, Any]]:
-    """Fetch and return the raw post dict for today's daily workout thread."""
+    """Fetch and return the raw post dict for today's daily workout thread.
+
+    Uses OAuth (via ``REDDIT_CLIENT_ID``/``REDDIT_CLIENT_SECRET`` env vars)
+    when available, since Reddit blocks most unauthenticated automated
+    requests to the public ``.json`` endpoints.
+    """
     session = session or requests.Session()
 
-    posts = fetch_posts(subreddit, sort="new", limit=50, session=session)
+    access_token = None
+    client_id = os.environ.get("REDDIT_CLIENT_ID")
+    client_secret = os.environ.get("REDDIT_CLIENT_SECRET")
+    if client_id and client_secret:
+        access_token = get_access_token(client_id, client_secret, session=session)
+
+    posts = fetch_posts(subreddit, sort="new", limit=50, session=session, access_token=access_token)
     post = find_daily_workout_post(posts, target_date=target_date)
     if post is not None:
         return post
 
     # New listing may have scrolled past it; fall back to a search.
-    posts = fetch_posts(subreddit, query="workout", sort="new", limit=25, session=session)
+    posts = fetch_posts(
+        subreddit, query="workout", sort="new", limit=25, session=session, access_token=access_token
+    )
     return find_daily_workout_post(posts, target_date=target_date)

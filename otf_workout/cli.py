@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -50,6 +51,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         try:
             post = get_daily_workout_post(args.subreddit, target_date=_parse_date(args.date))
+        except requests.exceptions.HTTPError as exc:
+            print(f"Could not reach Reddit: {exc}", file=sys.stderr)
+            if exc.response is not None and exc.response.status_code == 403 and not (
+                os.environ.get("REDDIT_CLIENT_ID") and os.environ.get("REDDIT_CLIENT_SECRET")
+            ):
+                print(
+                    "Reddit blocks unauthenticated requests to its public .json endpoints from "
+                    "most automated/cloud traffic. Register a free script app at "
+                    "https://www.reddit.com/prefs/apps and set REDDIT_CLIENT_ID / "
+                    "REDDIT_CLIENT_SECRET env vars to use OAuth instead.",
+                    file=sys.stderr,
+                )
+            return 1
         except requests.exceptions.RequestException as exc:
             print(f"Could not reach Reddit: {exc}", file=sys.stderr)
             return 1

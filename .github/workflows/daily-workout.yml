@@ -22,6 +22,9 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Fetch today's workout table
+        env:
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
         run: python -m otf_workout.cli --output workout_table.md
 
       - name: Commit table if it changed
