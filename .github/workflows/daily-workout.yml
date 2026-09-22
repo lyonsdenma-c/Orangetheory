@@ -1,0 +1,33 @@
+name: Daily Orangetheory workout table
+
+on:
+  schedule:
+    # 11:00 UTC daily; adjust to when the subreddit's workout thread is posted.
+    - cron: "0 11 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  build-table:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch today's workout table
+        run: python -m otf_workout.cli --output workout_table.md
+
+      - name: Commit table if it changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add workout_table.md
+          git diff --cached --quiet || git commit -m "Update daily workout table"
+          git push
